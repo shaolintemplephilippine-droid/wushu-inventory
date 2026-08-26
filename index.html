@@ -136,6 +136,35 @@ tr:hover td { background:#f8fafc; }
 .auth-error { color:var(--danger); font-size:13px; min-height:20px; margin-bottom:12px; text-align:left; }
 .user-info { display:flex; align-items:center; gap:12px; font-size:13px; }
 #authOverlay.hidden { display:none; }
+
+/* ===== Mobile responsive ===== */
+.menu-btn { display:none; padding:6px 12px; }
+.sidebar-backdrop { display:none; }
+.table-wrap { -webkit-overflow-scrolling:touch; }
+@media (max-width:768px) {
+  body { flex-direction:column; }
+  .menu-btn { display:inline-flex; }
+  .sidebar { position:fixed; top:0; left:0; bottom:0; height:100vh; z-index:4000; transform:translateX(-100%); transition:transform .25s ease; }
+  .sidebar.open { transform:translateX(0); box-shadow:0 0 40px rgba(0,0,0,.35); }
+  .sidebar-backdrop { display:block; position:fixed; inset:0; background:rgba(0,0,0,.45); z-index:3500; opacity:0; pointer-events:none; transition:opacity .25s; }
+  .sidebar-backdrop.show { opacity:1; pointer-events:auto; }
+  .main { width:100%; height:100vh; }
+  .topbar { padding:8px 12px; height:auto; min-height:52px; flex-wrap:wrap; gap:6px; }
+  #currentDate { display:none; }
+  #userEmail { max-width:130px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .user-info { flex-wrap:wrap; gap:6px; font-size:12px; }
+  .content { padding:12px; }
+  .stats-grid { grid-template-columns:repeat(2,minmax(0,1fr)); gap:10px; }
+  .stat-card { padding:14px; }
+  .stat-card .value { font-size:22px; }
+  .chart-row { grid-template-columns:1fr; }
+  .form-row, .form-row3 { grid-template-columns:1fr; }
+  .so-batch-row, .so-modal-row { grid-template-columns:repeat(4,minmax(0,1fr)) !important; }
+  table { font-size:13px; }
+  th, td { padding:8px; }
+  .modal { padding:16px; }
+  .btn { min-height:38px; }
+}
 </style>
 </head>
 <body>
@@ -160,11 +189,15 @@ tr:hover td { background:#f8fafc; }
     <a href="index.html" style="display:block;padding:8px 12px;border-radius:6px;color:#94a3b8;font-size:13px;text-decoration:none;">&larr; 返回工作台</a>
   </div>
 </div>
+<div class="sidebar-backdrop" id="sidebarBackdrop" onclick="toggleSidebar(true)"></div>
 
 <!-- ===== Main ===== -->
 <div class="main">
   <div class="topbar">
-    <h2 id="pageTitle">库存看板</h2>
+    <div style="display:flex;align-items:center;gap:10px;min-width:0">
+      <button class="btn btn-outline menu-btn" onclick="toggleSidebar()" title="菜单">&#9776;</button>
+      <h2 id="pageTitle" style="white-space:nowrap;overflow:hidden;text-overflow:ellipsis">库存看板</h2>
+    </div>
     <div class="user-info">
       <span class="date" id="currentDate"></span>
       <span id="userEmail" style="color:var(--text-secondary)"></span>
@@ -535,8 +568,17 @@ function computeInventory() {
 const LOW_STOCK_THRESHOLD = 5;
 
 // ===================== Navigation =====================
+function toggleSidebar(forceClose) {
+  const sb = document.querySelector('.sidebar');
+  const bd = document.getElementById('sidebarBackdrop');
+  if (forceClose) { sb.classList.remove('open'); bd.classList.remove('show'); return; }
+  sb.classList.toggle('open');
+  bd.classList.toggle('show', sb.classList.contains('open'));
+}
 document.querySelectorAll('.nav-item').forEach(item => {
   item.addEventListener('click', () => {
+    toggleSidebar(true); // 关闭移动端侧边栏
+    if (!item.dataset.view) return; // 数据管理按钮（导出/导入/上传）不切换视图
     document.querySelectorAll('.nav-item').forEach(n => n.classList.remove('active'));
     item.classList.add('active');
     renderView(item.dataset.view);
@@ -1426,7 +1468,7 @@ function showBatchCountModal(inv) {
       <div class="form-group" style="margin:0"><label>盘点日期</label><input id="batch_date" type="date" value="${new Date().toISOString().slice(0,10)}"></div>
       <div class="form-group" style="margin:0"><label>操作人</label><input id="batch_operator" value="" placeholder="如：陈教练"></div>
     </div>
-    <div style="max-height:400px;overflow-y:auto;border:1px solid var(--border);border-radius:8px">
+    <div style="max-height:400px;overflow:auto;border:1px solid var(--border);border-radius:8px;-webkit-overflow-scrolling:touch">
       <table style="width:100%">
         <thead><tr><th>尺寸</th><th>应余</th><th>实余</th><th>差异</th></tr></thead>
         <tbody id="batchBody">${rowsHtml}</tbody>
