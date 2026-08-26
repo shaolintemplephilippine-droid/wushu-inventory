@@ -1,0 +1,15 @@
+# Supabase CLI local cache
+supabase/.temp/
+supabase/config.toml
+
+# Dependencies
+node_modules/
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Editor files
+.vscode/
+.idea/
+
