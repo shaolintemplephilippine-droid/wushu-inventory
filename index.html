@@ -151,6 +151,10 @@ tr:hover td { background:#f8fafc; }
   <div class="nav-item" data-view="stockin"><span class="icon">&#x1f4e6;</span> 入库记录</div>
   <div class="nav-item" data-view="stockout"><span class="icon">&#x1f4e4;</span> 出库 / 领取</div>
   <div class="nav-item" data-view="detail"><span class="icon">&#x1f4cb;</span> 库存明细</div>
+  <div class="sidebar-section-title">数据管理</div>
+  <div class="nav-item" onclick="exportData()"><span class="icon">&#x1f4be;</span> 导出数据</div>
+  <div class="nav-item" onclick="importData()"><span class="icon">&#x1f4c2;</span> 导入数据</div>
+  <div class="nav-item" onclick="pushToCloud()" style="display:none" id="pushCloudBtn"><span class="icon">&#x2601;</span> 上传到云端</div>
   <div class="sidebar-footer">
     <a href="index.html" style="display:block;padding:8px 12px;border-radius:6px;color:#94a3b8;font-size:13px;text-decoration:none;">&larr; 返回工作台</a>
   </div>
@@ -1476,14 +1480,17 @@ function setAuthUI() {
   const emailSpan = document.getElementById('userEmail');
   const logoutBtn = document.getElementById('logoutBtn');
   const overlay = document.getElementById('authOverlay');
+  const pushBtn = document.getElementById('pushCloudBtn');
   if (_currentUser) {
     emailSpan.textContent = _currentUser.email;
     logoutBtn.style.display = '';
     overlay.classList.add('hidden');
+    if (pushBtn) pushBtn.style.display = '';
   } else {
     emailSpan.textContent = '未登录';
     logoutBtn.style.display = 'none';
     overlay.classList.remove('hidden');
+    if (pushBtn) pushBtn.style.display = 'none';
   }
 }
 
@@ -1546,6 +1553,124 @@ async function checkAuthOnLoad() {
     await loadFromCloud();
   }
   setAuthUI();
+}
+
+// ===================== Export / Import / Push =====================
+function exportData() {
+  const blob = new Blob([JSON.stringify(db, null, 2)], {type: 'application/json'});
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = 'inventory_backup_' + new Date().toISOString().slice(0,10) + '.json';
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  URL.revokeObjectURL(url);
+  toast('数据已导出');
+}
+
+function importData() {
+  const input = document.createElement('input');
+  input.type = 'file';
+  input.accept = '.json';
+  input.addEventListener('change', async (e) => {
+    const file = e.target.files[0];
+    if (!file) return;
+    const text = await file.text();
+    try {
+      const imported = JSON.parse(text);
+      if (!imported.stockIn || !imported.stockOut) {
+        toast('文件格式不正确，请选择库存备份文件');
+        return;
+      }
+      const sinCount = imported.stockIn?.length || 0;
+      const soutCount = imported.stockOut?.length || 0;
+      const acCount = Object.keys(imported.actualCounts || {}).length;
+      if (!confirm(`即将导入：\n入库 ${sinCount} 条\n出库 ${soutCount} 条\n盘点 ${acCount} 条\n\n这将覆盖当前所有数据，确认继续？`)) return;
+
+      db = imported;
+      if (!db.actualCounts) db.actualCounts = {};
+      if (!db.nextId) db.nextId = { stockIn: 1, stockOut: 1 };
+      saveData();
+
+      if (_currentUser) {
+        // Push to cloud: delete all then re-insert
+        await _supabase.from('stock_in').delete().neq('id', 0);
+        await _supabase.from('stock_out').delete().neq('id', 0);
+        await _supabase.from('actual_counts').delete().neq('type', '');
+
+        if (db.stockIn.length > 0) {
+          const rows = db.stockIn.map(r => ({
+            type: r.type, size: r.size, date: r.date, quantity: r.quantity,
+            operator: r.operator, note: r.note || ''
+          }));
+          const { error } = await _supabase.from('stock_in').insert(rows).select();
+          if (error) console.error('import stock_in error', error);
+        }
+        if (db.stockOut.length > 0) {
+          const rows = db.stockOut.map(r => ({
+            student: r.student, type: r.type, size: r.size, date: r.date, quantity: r.quantity,
+            paid: r.paid || false, payment_method: r.paymentMethod || '', operator: r.operator, note: r.note || ''
+          }));
+          const { error } = await _supabase.from('stock_out').insert(rows).select();
+          if (error) console.error('import stock_out error', error);
+        }
+        if (Object.keys(db.actualCounts).length > 0) {
+          const rows = Object.entries(db.actualCounts).map(([key, r]) => {
+            const [type, size] = key.split('|');
+            return { type, size, qty: r.qty, date: r.date, operator: r.operator };
+          });
+          const { error } = await _supabase.from('actual_counts').upsert(rows, { onConflict: 'type,size' });
+          if (error) console.error('import actual_counts error', error);
+        }
+        await loadFromCloud();
+      }
+
+      renderView(currentView);
+      toast('数据导入成功');
+    } catch (err) {
+      console.error(err);
+      toast('导入失败：文件解析错误');
+    }
+  });
+  input.click();
+}
+
+async function pushToCloud() {
+  if (!_currentUser) { toast('请先登录'); return; }
+  if (!confirm('这将用本地数据覆盖云端数据，确认继续？')) return;
+
+  await _supabase.from('stock_in').delete().neq('id', 0);
+  await _supabase.from('stock_out').delete().neq('id', 0);
+  await _supabase.from('actual_counts').delete().neq('type', '');
+
+  if (db.stockIn.length > 0) {
+    const rows = db.stockIn.map(r => ({
+      type: r.type, size: r.size, date: r.date, quantity: r.quantity,
+      operator: r.operator, note: r.note || ''
+    }));
+    const { error } = await _supabase.from('stock_in').insert(rows);
+    if (error) { console.error(error); toast('入库上传失败'); return; }
+  }
+  if (db.stockOut.length > 0) {
+    const rows = db.stockOut.map(r => ({
+      student: r.student, type: r.type, size: r.size, date: r.date, quantity: r.quantity,
+      paid: r.paid || false, payment_method: r.paymentMethod || '', operator: r.operator, note: r.note || ''
+    }));
+    const { error } = await _supabase.from('stock_out').insert(rows);
+    if (error) { console.error(error); toast('出库上传失败'); return; }
+  }
+  if (Object.keys(db.actualCounts).length > 0) {
+    const rows = Object.entries(db.actualCounts).map(([key, r]) => {
+      const [type, size] = key.split('|');
+      return { type, size, qty: r.qty, date: r.date, operator: r.operator };
+    });
+    const { error } = await _supabase.from('actual_counts').upsert(rows, { onConflict: 'type,size' });
+    if (error) { console.error(error); toast('盘点上传失败'); return; }
+  }
+  await loadFromCloud();
+  renderView(currentView);
+  toast('本地数据已上传到云端');
 }
 
 // Date display
