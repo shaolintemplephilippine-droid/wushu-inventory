@@ -227,6 +227,7 @@ let db = {
   stockIn: [],
   stockOut: [],
   actualCounts: {},
+  openingStock: {},
   nextId: { stockIn: 1, stockOut: 1 }
 };
 
@@ -297,6 +298,7 @@ function buildDefaultData() {
       '鞋子|46': { qty:3, date:'2026-06-02', operator:'陈教练' },
       '鞋子|47': { qty:3, date:'2026-06-02', operator:'陈教练' },
     },
+    openingStock: {},
     nextId: { stockIn:48, stockOut:1 },
     _oldSizeMigrated: true,
     _oldShoeMigrated: true,
@@ -321,14 +323,16 @@ async function loadFromCloud() {
   if (!_supabase || !_currentUser) return false;
   _syncing = true;
   try {
-    const [{data:sin, error:e1}, {data:sout, error:e2}, {data:ac, error:e3}] = await Promise.all([
+    const [{data:sin, error:e1}, {data:sout, error:e2}, {data:ac, error:e3}, {data:os, error:e4}] = await Promise.all([
       _supabase.from('stock_in').select('*').order('date',{ascending:false}),
       _supabase.from('stock_out').select('*').order('date',{ascending:false}),
-      _supabase.from('actual_counts').select('*')
+      _supabase.from('actual_counts').select('*'),
+      _supabase.from('opening_stock').select('*')
     ]);
     if (e1) { console.error('stock_in load error', e1); toast('入库数据加载失败'); }
     if (e2) { console.error('stock_out load error', e2); toast('出库数据加载失败'); }
     if (e3) { console.error('actual_counts load error', e3); toast('盘点数据加载失败'); }
+    if (e4) { console.error('opening_stock load error', e4); toast('期初库存加载失败'); }
     db.stockIn = (sin || []).map(r => ({
       id: r.id, type: r.type, size: r.size, date: r.date,
       quantity: r.quantity, operator: r.operator, note: r.note || '',
@@ -343,6 +347,10 @@ async function loadFromCloud() {
     db.actualCounts = {};
     (ac || []).forEach(r => {
       db.actualCounts[r.type + '|' + r.size] = { qty: r.qty, date: r.date, operator: r.operator };
+    });
+    db.openingStock = {};
+    (os || []).forEach(r => {
+      db.openingStock[r.type + '|' + r.size] = { qty: r.qty, date: r.date, operator: r.operator, note: r.note || '' };
     });
     updateNextIds();
     saveLocal();
@@ -376,6 +384,14 @@ async function seedCloudIfEmpty() {
     });
     const { error } = await _supabase.from('actual_counts').upsert(rows, { onConflict: 'type,size' });
     if (error) console.error('seed actual_counts error', error);
+  }
+  if (Object.keys(defaults.openingStock || {}).length > 0) {
+    const rows = Object.entries(defaults.openingStock).map(([key, r]) => {
+      const [type, size] = key.split('|');
+      return { type, size, qty: r.qty, date: r.date, operator: r.operator, note: r.note || '' };
+    });
+    const { error } = await _supabase.from('opening_stock').upsert(rows, { onConflict: 'type,size' });
+    if (error) console.error('seed opening_stock error', error);
   }
 }
 
@@ -413,6 +429,16 @@ async function migrateLocalToCloud() {
       if (error) console.error('actual_counts migration error', error);
     }
   }
+  if (local.openingStock) {
+    const rows = Object.entries(local.openingStock).map(([key, r]) => {
+      const [type, size] = key.split('|');
+      return { type, size, qty: r.qty, date: r.date, operator: r.operator, note: r.note || '' };
+    });
+    if (rows.length > 0) {
+      const { error } = await _supabase.from('opening_stock').upsert(rows, { onConflict: 'type,size' });
+      if (error) console.error('opening_stock migration error', error);
+    }
+  }
   toast('本地数据已上传');
 }
 
@@ -421,6 +447,7 @@ async function initData() {
   if (local) {
     db = local;
     if (!db.actualCounts) db.actualCounts = {};
+    if (!db.openingStock) db.openingStock = {};
     if (!db.nextId) db.nextId = { stockIn: 1, stockOut: 1 };
     db.nextId.stockIn = db.nextId.stockIn || 1;
     db.nextId.stockOut = db.nextId.stockOut || 1;
@@ -493,6 +520,18 @@ async function sbDeleteActualCount(type, size) {
   const { error } = await _supabase.from('actual_counts').delete().match({ type, size });
   if (error) { console.error(error); toast('盘点删除失败'); }
 }
+async function sbUpsertOpeningStock(type, size, record) {
+  if (!_supabase || !_currentUser) return;
+  const { error } = await _supabase.from('opening_stock').upsert({
+    type, size, qty: record.qty, date: record.date, operator: record.operator, note: record.note || ''
+  }, { onConflict: 'type,size' });
+  if (error) { console.error(error); toast('期初库存同步失败'); }
+}
+async function sbDeleteOpeningStock(type, size) {
+  if (!_supabase || !_currentUser) return;
+  const { error } = await _supabase.from('opening_stock').delete().match({ type, size });
+  if (error) { console.error(error); toast('期初库存删除失败'); }
+}
 
 function saveData() {
   // Keep local cache always in sync
@@ -541,15 +580,17 @@ function computeInventory() {
     if (!map[key]) map[key] = { type:r.type, size:r.size, stockIn:0, stockOut:0 };
     map[key].stockOut += r.quantity;
   });
-  // 计算剩余（应余 = 入库 - 出库）
+  // 计算剩余（应余 = 期初 + 入库 - 出库）
   const list = Object.values(map).map(item => {
     const key = item.type + '|' + item.size;
     const ac = db.actualCounts[key];
-    const expected = item.stockIn - item.stockOut;
+    const opening = db.openingStock[key] ? db.openingStock[key].qty : 0;
+    const expected = opening + item.stockIn - item.stockOut;
     const actual = ac ? ac.qty : null;
     const diff = actual !== null ? actual - expected : null;
     return {
       ...item,
+      opening,
       expected,
       remaining: expected,
       actual,
@@ -656,9 +697,10 @@ function renderDashboard(c) {
   } else {
     const wrap = el('div',{class:'table-wrap'});
     wrap.innerHTML = `<table>
-      <thead><tr><th>物品</th><th>尺寸</th><th>入库量</th><th>出库量</th><th>应余</th><th>状态</th></tr></thead>
+      <thead><tr><th>物品</th><th>尺寸</th><th>期初</th><th>入库量</th><th>出库量</th><th>应余</th><th>状态</th></tr></thead>
       <tbody>${lowStock.map(i => `<tr>
         <td style="font-weight:600">${i.type}</td><td>${i.size}</td>
+        <td>${i.opening}</td>
         <td>${i.stockIn}</td><td>${i.stockOut}</td>
         <td style="color:var(--danger);font-weight:700">${i.expected}</td>
         <td><span class="badge low">${i.expected<=0?'缺货':'低库存'}</span></td>
@@ -1256,6 +1298,8 @@ function renderDetail(c) {
   fb.appendChild(selStatus);
   const btnBatch = el('button',{class:'btn btn-primary',onclick:()=>showBatchCountModal(inv)},['批量盘点']);
   fb.appendChild(btnBatch);
+  const btnOpen = el('button',{class:'btn btn-secondary',onclick:()=>showBatchOpeningModal(inv),style:'margin-left:8px'},['期初库存录入']);
+  fb.appendChild(btnOpen);
   filterBar.appendChild(fb);
   card.appendChild(filterBar);
 
@@ -1305,7 +1349,7 @@ function renderDetailTable(wrap, inv) {
   if (inv.length === 0) { wrap.appendChild(emptyState('📋','暂无库存数据')); return; }
   wrap.innerHTML = `<table>
     <thead><tr>
-      <th>物品</th><th>尺寸</th><th>入库量</th><th>出库量</th>
+      <th>物品</th><th>尺寸</th><th>期初</th><th>入库量</th><th>出库量</th>
       <th style="background:#eff6ff">应余</th><th style="background:#f0fdf4">实余</th><th>差异</th>
       <th>盘点日期</th><th>盘点状态</th><th>操作</th>
     </tr></thead>
@@ -1326,6 +1370,7 @@ function renderDetailTable(wrap, inv) {
       return `<tr>
         <td style="font-weight:600">${i.type}</td>
         <td>${i.size}</td>
+        <td>${i.opening} <button class="btn btn-sm btn-outline" onclick="showOpeningModal('${i.type}','${i.size}')" style="padding:2px 6px;font-size:11px">编辑</button></td>
         <td>${i.stockIn}</td>
         <td>${i.stockOut}</td>
         <td style="font-weight:700;color:${expectedColor};background:#eff6ff">${i.expected}</td>
@@ -1369,6 +1414,10 @@ function showActualModal(type, size) {
         <span style="font-weight:700">${type} ${size}</span>
       </div>
       <div style="display:flex;justify-content:space-between;margin-bottom:8px">
+        <span style="color:var(--text-secondary)">期初库存</span>
+        <span>${item.opening}</span>
+      </div>
+      <div style="display:flex;justify-content:space-between;margin-bottom:8px">
         <span style="color:var(--text-secondary)">入库量</span>
         <span>${item.stockIn}</span>
       </div>
@@ -1378,7 +1427,7 @@ function showActualModal(type, size) {
       </div>
       <div style="display:flex;justify-content:space-between;border-top:1px solid var(--border);padding-top:8px">
         <span style="color:var(--text-secondary);font-weight:600">应余</span>
-        <span style="font-weight:700;color:var(--accent)">${item.expected} 件</span>
+        <span style="font-weight:700;color:var(--accent)">${item.opening} + ${item.stockIn} - ${item.stockOut} = ${item.expected} 件</span>
       </div>
     </div>
     <div class="form-group"><label>实际清点数量（实余）</label><input id="ac_qty" type="number" min="0" value="${ac?ac.qty:item.expected}" placeholder="清点后实际数量"></div>
@@ -1437,6 +1486,140 @@ async function clearActualCount(type, size, btn) {
   toast('已清除盘点记录');
 }
 
+// ===================== Opening Stock Modal =====================
+function showOpeningModal(type, size) {
+  const inv = computeInventory();
+  const item = inv.find(i => i.type === type && i.size === size);
+  if (!item) return;
+  const key = type + '|' + size;
+  const os = db.openingStock[key];
+  const overlay = el('div',{class:'modal-overlay'});
+  overlay.addEventListener('click', e => { if (e.target === overlay) overlay.remove(); });
+  const modal = el('div',{class:'modal'});
+  modal.innerHTML = `
+    <h3>期初库存录入</h3>
+    <div style="background:#f8fafc;border-radius:8px;padding:12px 16px;margin-bottom:16px">
+      <div style="display:flex;justify-content:space-between;margin-bottom:8px">
+        <span style="color:var(--text-secondary)">物品 / 尺寸</span>
+        <span style="font-weight:700">${type} ${size}</span>
+      </div>
+      <div style="display:flex;justify-content:space-between;border-top:1px solid var(--border);padding-top:8px">
+        <span style="color:var(--text-secondary);font-weight:600">当前应余</span>
+        <span style="font-weight:700;color:var(--accent)">${item.expected} 件</span>
+      </div>
+    </div>
+    <div class="form-group"><label>期初数量</label><input id="os_qty" type="number" min="0" value="${os?os.qty:0}" placeholder="上批剩余数量"></div>
+    <div class="form-row">
+      <div class="form-group"><label>日期</label><input id="os_date" type="date" value="${os?os.date:new Date().toISOString().slice(0,10)}"></div>
+      <div class="form-group"><label>操作人</label><input id="os_operator" value="${os?os.operator:''}" placeholder="如：陈教练"></div>
+    </div>
+    <div class="form-group"><label>备注</label><input id="os_note" value="${os?os.note||'':''}" placeholder="可选"></div>
+    <div class="modal-actions">
+      <button class="btn btn-outline" onclick="this.closest('.modal-overlay').remove()">取消</button>
+      <button class="btn btn-danger" onclick="clearOpeningStock('${type}','${size}',this)" style="background:#94a3b8">清除期初</button>
+      <button class="btn btn-primary" onclick="saveOpeningStock('${type}','${size}',this)">保存</button>
+    </div>`;
+  overlay.appendChild(modal);
+  document.body.appendChild(overlay);
+}
+
+async function saveOpeningStock(type, size, btn) {
+  const qty = parseInt(document.getElementById('os_qty').value);
+  const date = document.getElementById('os_date').value;
+  const operator = document.getElementById('os_operator').value.trim();
+  const note = document.getElementById('os_note').value.trim();
+  if (isNaN(qty) || qty < 0) { toast('请输入有效数量'); return; }
+  if (!operator) { toast('请填写操作人'); return; }
+  const key = type + '|' + size;
+  db.openingStock[key] = { qty, date, operator, note };
+  await sbUpsertOpeningStock(type, size, { qty, date, operator, note });
+  saveData();
+  btn.closest('.modal-overlay').remove();
+  renderView('detail');
+  toast('期初库存已保存');
+}
+
+async function clearOpeningStock(type, size, btn) {
+  const key = type + '|' + size;
+  if (db.openingStock[key]) {
+    delete db.openingStock[key];
+    await sbDeleteOpeningStock(type, size);
+    saveData();
+  }
+  btn.closest('.modal-overlay').remove();
+  renderView('detail');
+  toast('已清除期初库存');
+}
+
+// ===================== Batch Opening Stock Modal =====================
+function showBatchOpeningModal(inv) {
+  const overlay = el('div',{class:'modal-overlay'});
+  overlay.addEventListener('click', e => { if (e.target === overlay) overlay.remove(); });
+  const modal = el('div',{class:'modal'});
+  modal.style.maxWidth = '650px';
+  let rowsHtml = '';
+  let currentType = '';
+  inv.forEach(i => {
+    if (i.type !== currentType) {
+      currentType = i.type;
+      rowsHtml += `<tr><td colspan="5" style="background:#1e293b;color:#fff;font-weight:600;padding:6px 12px">${currentType}</td></tr>`;
+    }
+    const key = i.type + '|' + i.size;
+    const os = db.openingStock[key];
+    const val = os ? os.qty : '';
+    rowsHtml += `<tr>
+      <td style="font-weight:600">${i.size}</td>
+      <td>${i.stockIn}</td>
+      <td>${i.stockOut}</td>
+      <td>${i.expected}</td>
+      <td><input type="number" min="0" class="batch-os-qty" data-key="${key}" value="${val}" placeholder="期初数量" style="width:90px;padding:5px 8px;border:1px solid var(--border);border-radius:6px"></td>
+    </tr>`;
+  });
+  modal.innerHTML = `
+    <h3>批量设置期初库存</h3>
+    <div class="form-row" style="margin-bottom:12px">
+      <div class="form-group" style="margin:0"><label>日期</label><input id="batch_os_date" type="date" value="${new Date().toISOString().slice(0,10)}"></div>
+      <div class="form-group" style="margin:0"><label>操作人</label><input id="batch_os_operator" value="" placeholder="如：陈教练"></div>
+    </div>
+    <div style="max-height:400px;overflow:auto;border:1px solid var(--border);border-radius:8px;-webkit-overflow-scrolling:touch">
+      <table style="width:100%">
+        <thead><tr><th>尺寸</th><th>入库</th><th>出库</th><th>应余</th><th>期初</th></tr></thead>
+        <tbody id="batchOsBody">${rowsHtml}</tbody>
+      </table>
+    </div>
+    <div class="modal-actions">
+      <button class="btn btn-outline" onclick="this.closest('.modal-overlay').remove()">取消</button>
+      <button class="btn btn-primary" onclick="saveBatchOpening(this)">保存期初</button>
+    </div>`;
+  overlay.appendChild(modal);
+  document.body.appendChild(overlay);
+}
+
+async function saveBatchOpening(btn) {
+  const date = document.getElementById('batch_os_date').value;
+  const operator = document.getElementById('batch_os_operator').value.trim();
+  if (!operator) { toast('请填写操作人'); return; }
+  let saved = 0;
+  const inputs = [...document.querySelectorAll('.batch-os-qty')];
+  for (const input of inputs) {
+    const v = input.value.trim();
+    if (v !== '') {
+      const qty = parseInt(v);
+      if (!isNaN(qty) && qty >= 0) {
+        db.openingStock[input.dataset.key] = { qty, date, operator, note: '' };
+        const [type, size] = input.dataset.key.split('|');
+        await sbUpsertOpeningStock(type, size, { qty, date, operator, note: '' });
+        saved++;
+      }
+    }
+  }
+  if (saved === 0) { toast('请至少填写一项期初数量'); return; }
+  saveData();
+  btn.closest('.modal-overlay').remove();
+  renderView('detail');
+  toast(`已保存 ${saved} 项期初库存`);
+}
+
 // ===================== Batch Count Modal =====================
 function showBatchCountModal(inv) {
   const overlay = el('div',{class:'modal-overlay'});
@@ -1457,7 +1640,10 @@ function showBatchCountModal(inv) {
     const diffText = ac ? (ac.qty === i.expected ? '0' : (ac.qty > i.expected ? '+' + (ac.qty - i.expected) : String(ac.qty - i.expected))) : '-';
     rowsHtml += `<tr>
       <td style="font-weight:600">${i.size}</td>
-      <td>应余 ${i.expected}</td>
+      <td>${i.opening}</td>
+      <td>${i.stockIn}</td>
+      <td>${i.stockOut}</td>
+      <td>${i.expected}</td>
       <td><input type="number" min="0" class="batch-qty" data-key="${key}" data-expected="${i.expected}" value="${actualVal}" placeholder="清点数量" style="width:90px;padding:5px 8px;border:1px solid var(--border);border-radius:6px"></td>
       <td class="batch-diff" style="color:${diffColor};font-weight:600">${diffText}</td>
     </tr>`;
@@ -1470,7 +1656,7 @@ function showBatchCountModal(inv) {
     </div>
     <div style="max-height:400px;overflow:auto;border:1px solid var(--border);border-radius:8px;-webkit-overflow-scrolling:touch">
       <table style="width:100%">
-        <thead><tr><th>尺寸</th><th>应余</th><th>实余</th><th>差异</th></tr></thead>
+        <thead><tr><th>尺寸</th><th>期初</th><th>入库</th><th>出库</th><th>应余</th><th>实余</th><th>差异</th></tr></thead>
         <tbody id="batchBody">${rowsHtml}</tbody>
       </table>
     </div>
@@ -1818,10 +2004,12 @@ function importData() {
       const sinCount = imported.stockIn?.length || 0;
       const soutCount = imported.stockOut?.length || 0;
       const acCount = Object.keys(imported.actualCounts || {}).length;
-      if (!confirm(`即将导入：\n入库 ${sinCount} 条\n出库 ${soutCount} 条\n盘点 ${acCount} 条\n\n这将覆盖当前所有数据，确认继续？`)) return;
+      const osCount = Object.keys(imported.openingStock || {}).length;
+      if (!confirm(`即将导入：\n入库 ${sinCount} 条\n出库 ${soutCount} 条\n盘点 ${acCount} 条\n期初库存 ${osCount} 条\n\n这将覆盖当前所有数据，确认继续？`)) return;
 
       db = imported;
       if (!db.actualCounts) db.actualCounts = {};
+      if (!db.openingStock) db.openingStock = {};
       if (!db.nextId) db.nextId = { stockIn: 1, stockOut: 1 };
       saveData();
 
@@ -1830,6 +2018,7 @@ function importData() {
         await _supabase.from('stock_in').delete().neq('id', 0);
         await _supabase.from('stock_out').delete().neq('id', 0);
         await _supabase.from('actual_counts').delete().neq('type', '');
+        await _supabase.from('opening_stock').delete().neq('type', '');
 
         if (db.stockIn.length > 0) {
           const rows = db.stockIn.map(r => ({
@@ -1855,6 +2044,14 @@ function importData() {
           });
           const { error } = await _supabase.from('actual_counts').upsert(rows, { onConflict: 'type,size' });
           if (error) console.error('import actual_counts error', error);
+        }
+        if (Object.keys(db.openingStock).length > 0) {
+          const rows = Object.entries(db.openingStock).map(([key, r]) => {
+            const [type, size] = key.split('|');
+            return { type, size, qty: r.qty, date: r.date, operator: r.operator, note: r.note || '' };
+          });
+          const { error } = await _supabase.from('opening_stock').upsert(rows, { onConflict: 'type,size' });
+          if (error) console.error('import opening_stock error', error);
         }
         await loadFromCloud();
       }
@@ -1883,7 +2080,8 @@ function pushToCloud() {
     <div style="background:#f8fafc;border-radius:8px;padding:12px 16px;margin-bottom:16px;font-size:13px">
       <div style="display:flex;justify-content:space-between;margin-bottom:6px"><span style="color:var(--text-secondary)">将上传入库记录</span><span style="font-weight:700">${db.stockIn.length} 条</span></div>
       <div style="display:flex;justify-content:space-between;margin-bottom:6px"><span style="color:var(--text-secondary)">将上传出库记录</span><span style="font-weight:700">${db.stockOut.length} 条</span></div>
-      <div style="display:flex;justify-content:space-between"><span style="color:var(--text-secondary)">将上传盘点记录</span><span style="font-weight:700">${Object.keys(db.actualCounts).length} 条</span></div>
+      <div style="display:flex;justify-content:space-between;margin-bottom:6px"><span style="color:var(--text-secondary)">将上传盘点记录</span><span style="font-weight:700">${Object.keys(db.actualCounts).length} 条</span></div>
+      <div style="display:flex;justify-content:space-between"><span style="color:var(--text-secondary)">将上传期初库存</span><span style="font-weight:700">${Object.keys(db.openingStock).length} 条</span></div>
     </div>
     <div class="form-group"><label>如确认覆盖，请输入「确认」二字</label><input id="push_confirm_text" placeholder="确认" autocomplete="off"></div>
     <div class="modal-actions">
@@ -1904,6 +2102,7 @@ async function doPushToCloud(btn) {
     await _supabase.from('stock_in').delete().neq('id', 0);
     await _supabase.from('stock_out').delete().neq('id', 0);
     await _supabase.from('actual_counts').delete().neq('type', '');
+    await _supabase.from('opening_stock').delete().neq('type', '');
 
     if (db.stockIn.length > 0) {
       const rows = db.stockIn.map(r => ({
@@ -1929,6 +2128,14 @@ async function doPushToCloud(btn) {
       });
       const { error } = await _supabase.from('actual_counts').upsert(rows, { onConflict: 'type,size' });
       if (error) { console.error(error); toast('盘点上传失败'); return; }
+    }
+    if (Object.keys(db.openingStock).length > 0) {
+      const rows = Object.entries(db.openingStock).map(([key, r]) => {
+        const [type, size] = key.split('|');
+        return { type, size, qty: r.qty, date: r.date, operator: r.operator, note: r.note || '' };
+      });
+      const { error } = await _supabase.from('opening_stock').upsert(rows, { onConflict: 'type,size' });
+      if (error) { console.error(error); toast('期初库存上传失败'); return; }
     }
     await loadFromCloud();
     renderView(currentView);
