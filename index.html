@@ -1353,6 +1353,8 @@ function renderDetail(c) {
   fb.appendChild(btnBatch);
   const btnOpen = el('button',{class:'btn btn-secondary',onclick:()=>showBatchOpeningModal(inv),style:'margin-left:8px'},['期初库存录入']);
   fb.appendChild(btnOpen);
+  const btnClearActual = el('button',{class:'btn btn-warning',onclick:()=>clearAllActualCounts(),style:'margin-left:8px;background:#f59e0b;color:#fff'},['清空全部实余']);
+  fb.appendChild(btnClearActual);
   filterBar.appendChild(fb);
   card.appendChild(filterBar);
 
@@ -1537,6 +1539,20 @@ async function clearActualCount(type, size, btn) {
   btn.closest('.modal-overlay').remove();
   renderView('detail');
   toast('已清除盘点记录');
+}
+
+async function clearAllActualCounts() {
+  const keys = Object.keys(db.actualCounts);
+  if (keys.length === 0) { toast('当前没有实余数据'); return; }
+  if (!confirm(`确认清空全部 ${keys.length} 条实余记录？\n注意：此操作不可恢复。`)) return;
+  const all = keys.map(key => { const [type, size] = key.split('|'); return { type, size, key }; });
+  db.actualCounts = {};
+  for (const { type, size } of all) {
+    await sbDeleteActualCount(type, size);
+  }
+  saveData();
+  renderView('detail');
+  toast('已清空全部实余数据');
 }
 
 // ===================== Opening Stock Modal =====================
