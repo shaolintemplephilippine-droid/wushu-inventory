@@ -770,6 +770,7 @@ function renderStockIn(c) {
     el('div',{class:'actions'},[
       el('button',{class:'btn btn-outline',onclick:()=>showBatchOperatorModal()},['批量改操作人']),
       el('button',{class:'btn btn-danger',onclick:()=>batchDeleteStockIn()},['批量删除']),
+      el('button',{class:'btn btn-warning',onclick:()=>clearAllStockIn(),style:'background:#f59e0b;color:#fff'},['清空全部入库']),
       el('button',{class:'btn btn-primary',onclick:()=>showStockInModal()},['+ 添加入库记录'])
     ])
   ]));
@@ -893,6 +894,19 @@ async function batchDeleteStockIn() {
   saveData();
   renderView('stockin');
   toast(`已删除 ${ids.length} 条入库记录`);
+}
+
+async function clearAllStockIn() {
+  if (db.stockIn.length === 0) { toast('当前没有入库记录'); return; }
+  if (!confirm(`确认清空全部 ${db.stockIn.length} 条入库记录？\n注意：此操作不可恢复，删除后库存会重新计算。`)) return;
+  const allIds = db.stockIn.map(s => s.id);
+  db.stockIn = [];
+  for (const id of allIds) {
+    await sbDeleteStockIn(id);
+  }
+  saveData();
+  renderView('stockin');
+  toast('已清空全部入库记录');
 }
 
 function showBatchOperatorModal() {
