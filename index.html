@@ -484,6 +484,11 @@ async function sbDeleteStockIn(id) {
   const { error } = await _supabase.from('stock_in').delete().eq('id', id);
   if (error) { console.error(error); toast('入库删除失败'); }
 }
+async function sbDeleteStockInBatch(ids) {
+  if (!_supabase || !_currentUser || ids.length === 0) return;
+  const { error } = await _supabase.from('stock_in').delete().in('id', ids);
+  if (error) { console.error(error); toast('批量删除入库失败：' + error.message); }
+}
 async function sbInsertStockOut(record) {
   if (!_supabase || !_currentUser) return;
   const { data, error } = await _supabase.from('stock_out').insert({
@@ -507,6 +512,11 @@ async function sbDeleteStockOut(id) {
   if (!_supabase || !_currentUser) return;
   const { error } = await _supabase.from('stock_out').delete().eq('id', id);
   if (error) { console.error(error); toast('出库删除失败'); }
+}
+async function sbDeleteStockOutBatch(ids) {
+  if (!_supabase || !_currentUser || ids.length === 0) return;
+  const { error } = await _supabase.from('stock_out').delete().in('id', ids);
+  if (error) { console.error(error); toast('批量删除出库失败：' + error.message); }
 }
 async function sbUpsertActualCount(type, size, record) {
   if (!_supabase || !_currentUser) return;
@@ -887,10 +897,8 @@ async function batchDeleteStockIn() {
   const ids = getSelectedStockInIds();
   if (ids.length === 0) { toast('请先勾选要删除的入库记录'); return; }
   if (!confirm(`确认删除选中的 ${ids.length} 条入库记录？\n注意：删除后剩余库存会重新计算。`)) return;
-  for (const id of ids) {
-    db.stockIn = db.stockIn.filter(s => s.id !== id);
-    await sbDeleteStockIn(id);
-  }
+  db.stockIn = db.stockIn.filter(s => !ids.includes(s.id));
+  await sbDeleteStockInBatch(ids);
   saveData();
   renderView('stockin');
   toast(`已删除 ${ids.length} 条入库记录`);
@@ -901,9 +909,7 @@ async function clearAllStockIn() {
   if (!confirm(`确认清空全部 ${db.stockIn.length} 条入库记录？\n注意：此操作不可恢复，删除后库存会重新计算。`)) return;
   const allIds = db.stockIn.map(s => s.id);
   db.stockIn = [];
-  for (const id of allIds) {
-    await sbDeleteStockIn(id);
-  }
+  await sbDeleteStockInBatch(allIds);
   saveData();
   renderView('stockin');
   toast('已清空全部入库记录');
@@ -1170,10 +1176,8 @@ async function batchDeleteStockOut() {
   const ids = getSelectedStockOutIds();
   if (ids.length === 0) { toast('请先勾选要删除的出库记录'); return; }
   if (!confirm(`确认删除选中的 ${ids.length} 条出库记录？`)) return;
-  for (const id of ids) {
-    db.stockOut = db.stockOut.filter(s => s.id !== id);
-    await sbDeleteStockOut(id);
-  }
+  db.stockOut = db.stockOut.filter(s => !ids.includes(s.id));
+  await sbDeleteStockOutBatch(ids);
   saveData();
   renderView('stockout');
   toast(`已删除 ${ids.length} 条出库记录`);
