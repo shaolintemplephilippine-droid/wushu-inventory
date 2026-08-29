@@ -1612,23 +1612,24 @@ function showBatchOpeningModal(inv) {
   overlay.addEventListener('click', e => { if (e.target === overlay) overlay.remove(); });
   const modal = el('div',{class:'modal'});
   modal.style.maxWidth = '650px';
+  const invMap = {};
+  inv.forEach(i => { invMap[i.type + '|' + i.size] = i; });
   let rowsHtml = '';
-  let currentType = '';
-  inv.forEach(i => {
-    if (i.type !== currentType) {
-      currentType = i.type;
-      rowsHtml += `<tr><td colspan="5" style="background:#1e293b;color:#fff;font-weight:600;padding:6px 12px">${currentType}</td></tr>`;
-    }
-    const key = i.type + '|' + i.size;
-    const os = db.openingStock[key];
-    const val = os ? os.qty : '';
-    rowsHtml += `<tr>
-      <td style="font-weight:600">${i.size}</td>
-      <td>${i.stockIn}</td>
-      <td>${i.stockOut}</td>
-      <td>${i.expected}</td>
-      <td><input type="number" min="0" class="batch-os-qty" data-key="${key}" value="${val}" placeholder="期初数量" style="width:90px;padding:5px 8px;border:1px solid var(--border);border-radius:6px"></td>
-    </tr>`;
+  TYPES.forEach(type => {
+    rowsHtml += `<tr><td colspan="5" style="background:#1e293b;color:#fff;font-weight:600;padding:6px 12px">${type}</td></tr>`;
+    getSizesForType(type).forEach(size => {
+      const key = type + '|' + size;
+      const i = invMap[key] || { type, size, stockIn:0, stockOut:0, expected:0 };
+      const os = db.openingStock[key];
+      const val = os ? os.qty : '';
+      rowsHtml += `<tr>
+        <td style="font-weight:600">${i.size}</td>
+        <td>${i.stockIn}</td>
+        <td>${i.stockOut}</td>
+        <td>${i.expected}</td>
+        <td><input type="number" min="0" class="batch-os-qty" data-key="${key}" value="${val}" placeholder="期初数量" style="width:90px;padding:5px 8px;border:1px solid var(--border);border-radius:6px"></td>
+      </tr>`;
+    });
   });
   modal.innerHTML = `
     <h3>批量设置期初库存</h3>
