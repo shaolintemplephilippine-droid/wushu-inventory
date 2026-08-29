@@ -769,6 +769,7 @@ function renderStockIn(c) {
     el('h3',{},['入库记录']),
     el('div',{class:'actions'},[
       el('button',{class:'btn btn-outline',onclick:()=>showBatchOperatorModal()},['批量改操作人']),
+      el('button',{class:'btn btn-danger',onclick:()=>batchDeleteStockIn()},['批量删除']),
       el('button',{class:'btn btn-primary',onclick:()=>showStockInModal()},['+ 添加入库记录'])
     ])
   ]));
@@ -881,6 +882,19 @@ function getSelectedStockInIds() {
   return [...document.querySelectorAll('.si-check:checked')].map(cb => parseInt(cb.value));
 }
 
+async function batchDeleteStockIn() {
+  const ids = getSelectedStockInIds();
+  if (ids.length === 0) { toast('请先勾选要删除的入库记录'); return; }
+  if (!confirm(`确认删除选中的 ${ids.length} 条入库记录？\n注意：删除后剩余库存会重新计算。`)) return;
+  for (const id of ids) {
+    db.stockIn = db.stockIn.filter(s => s.id !== id);
+    await sbDeleteStockIn(id);
+  }
+  saveData();
+  renderView('stockin');
+  toast(`已删除 ${ids.length} 条入库记录`);
+}
+
 function showBatchOperatorModal() {
   const ids = getSelectedStockInIds();
   if (ids.length === 0) { toast('请先勾选要修改的记录'); return; }
@@ -940,6 +954,7 @@ function renderStockOut(c) {
   card.appendChild(el('div',{class:'card-header'},[
     el('h3',{},['出库 / 领取记录']),
     el('div',{class:'actions'},[
+      el('button',{class:'btn btn-danger',onclick:()=>batchDeleteStockOut()},['批量删除']),
       el('button',{class:'btn btn-primary',onclick:()=>showStockOutBatchModal()},['+ 添加领取记录'])
     ])
   ]));
@@ -949,8 +964,9 @@ function renderStockOut(c) {
   } else {
     const sorted = [...db.stockOut].sort((a,b)=>b.date.localeCompare(a.date));
     wrap.innerHTML = `<table>
-      <thead><tr><th>出库日期</th><th>学生姓名</th><th>物品</th><th>尺寸</th><th>数量</th><th>金额</th><th>是否收款</th><th>收款方式</th><th>操作人</th><th>备注</th><th>操作</th></tr></thead>
+      <thead><tr><th style="width:32px"><input type="checkbox" id="so_selectAll" onchange="toggleAllStockOut(this.checked)"></th><th>出库日期</th><th>学生姓名</th><th>物品</th><th>尺寸</th><th>数量</th><th>金额</th><th>是否收款</th><th>收款方式</th><th>操作人</th><th>备注</th><th>操作</th></tr></thead>
       <tbody>${sorted.map(s=>`<tr>
+        <td><input type="checkbox" class="so-check" value="${s.id}"></td>
         <td>${s.date}</td>
         <td style="font-weight:600">${s.student}</td>
         <td>${s.type}</td>
@@ -1126,6 +1142,27 @@ async function deleteStockOut(id) {
   db.stockOut = db.stockOut.filter(s=>s.id!==id);
   await sbDeleteStockOut(id);
   saveData(); renderView('stockout'); toast('已删除');
+}
+
+function toggleAllStockOut(checked) {
+  document.querySelectorAll('.so-check').forEach(cb => cb.checked = checked);
+}
+
+function getSelectedStockOutIds() {
+  return [...document.querySelectorAll('.so-check:checked')].map(cb => parseInt(cb.value));
+}
+
+async function batchDeleteStockOut() {
+  const ids = getSelectedStockOutIds();
+  if (ids.length === 0) { toast('请先勾选要删除的出库记录'); return; }
+  if (!confirm(`确认删除选中的 ${ids.length} 条出库记录？`)) return;
+  for (const id of ids) {
+    db.stockOut = db.stockOut.filter(s => s.id !== id);
+    await sbDeleteStockOut(id);
+  }
+  saveData();
+  renderView('stockout');
+  toast(`已删除 ${ids.length} 条出库记录`);
 }
 
 // ===================== Stock Out Batch (Multi-row) =====================
