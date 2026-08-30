@@ -509,8 +509,16 @@ async function sbDeleteStockInBatch(ids) {
 }
 async function sbDeleteAllStockIn() {
   if (!_supabase || !_currentUser) return false;
-  const { error } = await _supabase.from('stock_in').delete().lte('id', Number.MAX_SAFE_INTEGER);
-  if (error) { console.error(error); toast('清空云端入库记录失败：' + error.message); return false; }
+  const { data: rows, error: fetchError } = await _supabase.from('stock_in').select('id');
+  if (fetchError) { console.error(fetchError); toast('读取入库记录失败：' + fetchError.message); return false; }
+  if (!rows || rows.length === 0) return true;
+  const ids = rows.map(r => r.id);
+  const chunkSize = 100;
+  for (let i = 0; i < ids.length; i += chunkSize) {
+    const chunk = ids.slice(i, i + chunkSize);
+    const { error } = await _supabase.from('stock_in').delete().in('id', chunk);
+    if (error) { console.error(error); toast('清空云端入库失败：' + error.message); return false; }
+  }
   return true;
 }
 
@@ -564,8 +572,13 @@ async function sbDeleteActualCount(type, size) {
 
 async function sbDeleteAllActualCounts() {
   if (!_supabase || !_currentUser) return false;
-  const { error } = await _supabase.from('actual_counts').delete().gte('qty', 0);
-  if (error) { console.error(error); toast('清空云端实余失败：' + error.message); return false; }
+  const { data: rows, error: fetchError } = await _supabase.from('actual_counts').select('type,size');
+  if (fetchError) { console.error(fetchError); toast('读取实余失败：' + fetchError.message); return false; }
+  if (!rows || rows.length === 0) return true;
+  for (const r of rows) {
+    const { error } = await _supabase.from('actual_counts').delete().match({ type: r.type, size: r.size });
+    if (error) { console.error(error); toast('清空云端实余失败：' + error.message); return false; }
+  }
   return true;
 }
 async function sbUpsertOpeningStock(type, size, record) {
