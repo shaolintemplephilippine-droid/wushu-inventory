@@ -486,9 +486,21 @@ async function sbDeleteStockIn(id) {
 }
 async function sbDeleteStockInBatch(ids) {
   if (!_supabase || !_currentUser || ids.length === 0) return;
-  const { error } = await _supabase.from('stock_in').delete().in('id', ids);
-  if (error) { console.error(error); toast('批量删除入库失败：' + error.message); }
+  const chunkSize = 100;
+  for (let i = 0; i < ids.length; i += chunkSize) {
+    const chunk = ids.slice(i, i + chunkSize);
+    const { error } = await _supabase.from('stock_in').delete().in('id', chunk);
+    if (error) { console.error(error); toast('批量删除入库失败：' + error.message); return false; }
+  }
+  return true;
 }
+async function sbDeleteAllStockIn() {
+  if (!_supabase || !_currentUser) return false;
+  const { error } = await _supabase.from('stock_in').delete().not('id', 'is', null);
+  if (error) { console.error(error); toast('清空云端入库记录失败：' + error.message); return false; }
+  return true;
+}
+
 async function sbInsertStockOut(record) {
   if (!_supabase || !_currentUser) return;
   const { data, error } = await _supabase.from('stock_out').insert({
@@ -515,8 +527,13 @@ async function sbDeleteStockOut(id) {
 }
 async function sbDeleteStockOutBatch(ids) {
   if (!_supabase || !_currentUser || ids.length === 0) return;
-  const { error } = await _supabase.from('stock_out').delete().in('id', ids);
-  if (error) { console.error(error); toast('批量删除出库失败：' + error.message); }
+  const chunkSize = 100;
+  for (let i = 0; i < ids.length; i += chunkSize) {
+    const chunk = ids.slice(i, i + chunkSize);
+    const { error } = await _supabase.from('stock_out').delete().in('id', chunk);
+    if (error) { console.error(error); toast('批量删除出库失败：' + error.message); return false; }
+  }
+  return true;
 }
 async function sbUpsertActualCount(type, size, record) {
   if (!_supabase || !_currentUser) return;
@@ -526,9 +543,17 @@ async function sbUpsertActualCount(type, size, record) {
   if (error) { console.error(error); toast('盘点同步失败'); }
 }
 async function sbDeleteActualCount(type, size) {
-  if (!_supabase || !_currentUser) return;
+  if (!_supabase || !_currentUser) return false;
   const { error } = await _supabase.from('actual_counts').delete().match({ type, size });
-  if (error) { console.error(error); toast('盘点删除失败'); }
+  if (error) { console.error(error); toast('盘点删除失败'); return false; }
+  return true;
+}
+
+async function sbDeleteAllActualCounts() {
+  if (!_supabase || !_currentUser) return false;
+  const { error } = await _supabase.from('actual_counts').delete().not('type', 'is', null);
+  if (error) { console.error(error); toast('清空云端实余失败：' + error.message); return false; }
+  return true;
 }
 async function sbUpsertOpeningStock(type, size, record) {
   if (!_supabase || !_currentUser) return;
@@ -905,12 +930,12 @@ async function batchDeleteStockIn() {
 async function clearAllStockIn() {
   if (db.stockIn.length === 0) { toast('当前没有入库记录'); return; }
   if (!confirm(`确认清空全部 ${db.stockIn.length} 条入库记录？\n注意：此操作不可恢复，删除后库存会重新计算。`)) return;
-  const allIds = db.stockIn.map(s => s.id);
   db.stockIn = [];
-  await sbDeleteStockInBatch(allIds);
+  const ok = await sbDeleteAllStockIn();
   saveData();
   renderView('stockin');
-  toast('已清空全部入库记录');
+  if (ok) toast('已清空全部入库记录');
+  else toast('云端清空失败，请检查网络或权限');
 }
 
 function showBatchOperatorModal() {
@@ -1545,14 +1570,12 @@ async function clearAllActualCounts() {
   const keys = Object.keys(db.actualCounts);
   if (keys.length === 0) { toast('当前没有实余数据'); return; }
   if (!confirm(`确认清空全部 ${keys.length} 条实余记录？\n注意：此操作不可恢复。`)) return;
-  const all = keys.map(key => { const [type, size] = key.split('|'); return { type, size, key }; });
   db.actualCounts = {};
-  for (const { type, size } of all) {
-    await sbDeleteActualCount(type, size);
-  }
+  const ok = await sbDeleteAllActualCounts();
   saveData();
   renderView('detail');
-  toast('已清空全部实余数据');
+  if (ok) toast('已清空全部实余数据');
+  else toast('云端清空失败，请检查网络或权限');
 }
 
 // ===================== Opening Stock Modal =====================
