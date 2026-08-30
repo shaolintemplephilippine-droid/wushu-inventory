@@ -202,6 +202,7 @@ tr:hover td { background:#f8fafc; }
       <span class="date" id="currentDate"></span>
       <span id="userEmail" style="color:var(--text-secondary)"></span>
       <button class="btn btn-sm btn-outline" id="syncBtn" onclick="refreshFromCloud()" title="从云端刷新">🔄 刷新</button>
+      <span id="syncStatus" style="font-size:12px;color:var(--text-secondary);white-space:nowrap"></span>
       <button class="btn btn-sm btn-outline" id="logoutBtn" onclick="signOut()" style="display:none">退出</button>
     </div>
   </div>
@@ -322,6 +323,7 @@ function updateNextIds() {
 async function loadFromCloud() {
   if (!_supabase || !_currentUser) return false;
   _syncing = true;
+  updateSyncStatus('syncing');
   try {
     const [{data:sin, error:e1}, {data:sout, error:e2}, {data:ac, error:e3}, {data:os, error:e4}] = await Promise.all([
       _supabase.from('stock_in').select('*').order('date',{ascending:false}),
@@ -329,35 +331,43 @@ async function loadFromCloud() {
       _supabase.from('actual_counts').select('*'),
       _supabase.from('opening_stock').select('*')
     ]);
-    if (e1) { console.error('stock_in load error', e1); toast('入库数据加载失败'); }
-    if (e2) { console.error('stock_out load error', e2); toast('出库数据加载失败'); }
-    if (e3) { console.error('actual_counts load error', e3); toast('盘点数据加载失败'); }
-    if (e4) { console.error('opening_stock load error', e4); toast('期初库存加载失败'); }
-    db.stockIn = (sin || []).map(r => ({
+    let ok = true;
+    if (e1) { ok = false; console.error('stock_in load error', e1); toast('入库数据加载失败：' + e1.message); }
+    if (e2) { ok = false; console.error('stock_out load error', e2); toast('出库数据加载失败：' + e2.message); }
+    if (e3) { ok = false; console.error('actual_counts load error', e3); toast('盘点数据加载失败：' + e3.message); }
+    if (e4) { ok = false; console.error('opening_stock load error', e4); toast('期初库存加载失败：' + e4.message); }
+    if (sin !== null) db.stockIn = sin.map(r => ({
       id: r.id, type: r.type, size: r.size, date: r.date,
       quantity: r.quantity, operator: r.operator, note: r.note || '',
       amount: Number(r.amount) || 0
     }));
-    db.stockOut = (sout || []).map(r => ({
+    if (sout !== null) db.stockOut = sout.map(r => ({
       id: r.id, student: r.student, type: r.type, size: r.size, date: r.date,
       quantity: r.quantity, paid: r.paid, paymentMethod: r.payment_method || '',
       operator: r.operator, note: r.note || '',
       amount: Number(r.amount) || 0
     }));
-    db.actualCounts = {};
-    (ac || []).forEach(r => {
-      db.actualCounts[r.type + '|' + r.size] = { qty: r.qty, date: r.date, operator: r.operator };
-    });
-    db.openingStock = {};
-    (os || []).forEach(r => {
-      db.openingStock[r.type + '|' + r.size] = { qty: r.qty, date: r.date, operator: r.operator, note: r.note || '' };
-    });
+    if (ac !== null) {
+      db.actualCounts = {};
+      ac.forEach(r => {
+        db.actualCounts[r.type + '|' + r.size] = { qty: r.qty, date: r.date, operator: r.operator };
+      });
+    }
+    if (os !== null) {
+      db.openingStock = {};
+      os.forEach(r => {
+        db.openingStock[r.type + '|' + r.size] = { qty: r.qty, date: r.date, operator: r.operator, note: r.note || '' };
+      });
+    }
     updateNextIds();
     saveLocal();
-    return true;
+    if (ok) updateSyncStatus('ok');
+    else updateSyncStatus('error');
+    return ok;
   } catch(e) {
     console.error('Cloud load failed', e);
     toast('云端同步失败，使用本地缓存');
+    updateSyncStatus('error');
     return false;
   } finally {
     _syncing = false;
@@ -443,22 +453,25 @@ async function migrateLocalToCloud() {
 }
 
 async function initData() {
-  const local = loadLocal();
-  if (local) {
-    db = local;
-    if (!db.actualCounts) db.actualCounts = {};
-    if (!db.openingStock) db.openingStock = {};
-    if (!db.nextId) db.nextId = { stockIn: 1, stockOut: 1 };
-    db.nextId.stockIn = db.nextId.stockIn || 1;
-    db.nextId.stockOut = db.nextId.stockOut || 1;
-  } else {
-    db = buildDefaultData();
-  }
+  // Cloud-first: if logged in, always load latest cloud data and overwrite local.
   if (_currentUser) {
-    await seedCloudIfEmpty();
-    await migrateLocalToCloud();
-    await loadFromCloud();
+    const cloudLoaded = await loadFromCloud();
+    if (!cloudLoaded) {
+      // Fallback to local if cloud fails
+      const local = loadLocal();
+      if (local) db = local;
+      else db = buildDefaultData();
+    }
+  } else {
+    const local = loadLocal();
+    if (local) db = local;
+    else db = buildDefaultData();
   }
+  if (!db.actualCounts) db.actualCounts = {};
+  if (!db.openingStock) db.openingStock = {};
+  if (!db.nextId) db.nextId = { stockIn: 1, stockOut: 1 };
+  db.nextId.stockIn = db.nextId.stockIn || 1;
+  db.nextId.stockOut = db.nextId.stockOut || 1;
 }
 
 // ===================== Cloud CRUD helpers =====================
@@ -496,7 +509,7 @@ async function sbDeleteStockInBatch(ids) {
 }
 async function sbDeleteAllStockIn() {
   if (!_supabase || !_currentUser) return false;
-  const { error } = await _supabase.from('stock_in').delete().not('id', 'is', null);
+  const { error } = await _supabase.from('stock_in').delete().lte('id', Number.MAX_SAFE_INTEGER);
   if (error) { console.error(error); toast('清空云端入库记录失败：' + error.message); return false; }
   return true;
 }
@@ -551,7 +564,7 @@ async function sbDeleteActualCount(type, size) {
 
 async function sbDeleteAllActualCounts() {
   if (!_supabase || !_currentUser) return false;
-  const { error } = await _supabase.from('actual_counts').delete().not('type', 'is', null);
+  const { error } = await _supabase.from('actual_counts').delete().gte('qty', 0);
   if (error) { console.error(error); toast('清空云端实余失败：' + error.message); return false; }
   return true;
 }
@@ -2002,6 +2015,7 @@ function setAuthUI() {
     logoutBtn.style.display = 'none';
     overlay.classList.remove('hidden');
     if (pushBtn) pushBtn.style.display = 'none';
+    updateSyncStatus('offline');
   }
 }
 
@@ -2055,6 +2069,16 @@ async function refreshFromCloud() {
   }
 }
 
+function updateSyncStatus(state) {
+  const el = document.getElementById('syncStatus');
+  if (!el) return;
+  const now = new Date().toLocaleTimeString('zh-CN', {hour:'2-digit', minute:'2-digit'});
+  if (state === 'syncing') el.textContent = '同步中...';
+  else if (state === 'ok') el.textContent = '已同步 ' + now;
+  else if (state === 'error') el.textContent = '同步失败 ' + now;
+  else if (!_currentUser) el.textContent = '未登录';
+}
+
 async function checkAuthOnLoad() {
   if (!_supabase) return;
   await initData();
@@ -2064,6 +2088,11 @@ async function checkAuthOnLoad() {
     await loadFromCloud();
   }
   setAuthUI();
+  // Auto-sync every 60 seconds when logged in
+  if (window._syncInterval) clearInterval(window._syncInterval);
+  window._syncInterval = setInterval(() => {
+    if (_currentUser && !_syncing) loadFromCloud().then(ok => { if (ok) renderView(currentView); });
+  }, 60000);
 }
 
 // ===================== Export / Import / Push =====================
