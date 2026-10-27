@@ -627,18 +627,28 @@ function getSizesForType(type) { return SIZES[type] || ['均码']; }
 // 计算每种 type+size 的库存
 function computeInventory() {
   const map = {};
+  // 取（或新建）某个规格的汇总行
+  const ensure = (type, size) => {
+    const key = type + '|' + size;
+    if (!map[key]) map[key] = { type, size, stockIn:0, stockOut:0 };
+    return map[key];
+  };
+  const ensureByKey = key => {
+    const idx = key.indexOf('|');
+    if (idx < 1 || idx === key.length - 1) return;
+    ensure(key.slice(0, idx), key.slice(idx + 1));
+  };
   // 汇总入库
-  db.stockIn.forEach(r => {
-    const key = r.type + '|' + r.size;
-    if (!map[key]) map[key] = { type:r.type, size:r.size, stockIn:0, stockOut:0 };
-    map[key].stockIn += r.quantity;
-  });
+  db.stockIn.forEach(r => { ensure(r.type, r.size).stockIn += r.quantity; });
   // 汇总出库
-  db.stockOut.forEach(r => {
-    const key = r.type + '|' + r.size;
-    if (!map[key]) map[key] = { type:r.type, size:r.size, stockIn:0, stockOut:0 };
-    map[key].stockOut += r.quantity;
+  db.stockOut.forEach(r => { ensure(r.type, r.size).stockOut += r.quantity; });
+  // 只有期初库存、从来没有出过入库的规格也要出现在库存明细里（期初为 0 的不占一行）
+  Object.entries(db.openingStock || {}).forEach(([key, r]) => {
+    if (!r || !Number(r.qty)) return;
+    ensureByKey(key);
   });
+  // 只有盘点记录、没有出入库的规格同理
+  Object.keys(db.actualCounts || {}).forEach(ensureByKey);
   // 计算剩余（应余 = 期初 + 入库 - 出库）
   const list = Object.values(map).map(item => {
     const key = item.type + '|' + item.size;
